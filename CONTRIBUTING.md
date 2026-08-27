@@ -83,6 +83,17 @@ No se exige aprobación de un revisor, porque hay repositorios con una sola
 persona trabajando. Eso no es permiso para saltarse la revisión: si hay alguien
 más en el proyecto, pídela.
 
+## Documentación
+
+Toda la documentación del proyecto vive en el directorio `docs/` de la raíz del
+repositorio, y se escribe en Markdown (`.md`). No se dejan documentos sueltos en
+la raíz ni repartidos por otras carpetas: si es documentación, va en `docs/`.
+
+El `README.md` es la excepción: se queda en la raíz, porque es lo primero que se
+ve al abrir el repositorio. Todo lo demás —guías, notas técnicas, decisiones,
+instrucciones de setup— va en `docs/`, con nombre en minúsculas y palabras
+unidas por guiones (`docs/deploy-a-staging.md`, no `docs/Deploy Staging.md`).
+
 ## Registro de cambios
 
 Cada repositorio lleva un `CHANGELOG.md` en la raíz, en formato
