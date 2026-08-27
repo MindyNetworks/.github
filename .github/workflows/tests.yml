@@ -1,0 +1,159 @@
+# Tests y cobertura sobre el diff, para todas las organizaciones de Mindy.
+#
+# Workflow REUSABLE, igual que security.yml. Lee la configuracion del propio
+# repositorio desde .mindy.yml, para que el numero que exige el CI y el numero
+# que el agente lee en AGENTS.md sean el mismo. Si divergen, el agente miente
+# con confianza.
+#
+# .mindy.yml en la raiz del repositorio:
+#
+#   stack: nextjs-supabase   # informativo; la deteccion es automatica
+#   tests: required          # required | suggested
+#   coverage_diff: 85        # % minimo sobre lineas agregadas o modificadas
+#   data: none               # none | financial | health
+#
+# Por que el umbral es sobre el DIFF y no sobre el proyecto: los repositorios
+# arrancan sin tests. Un umbral global del 85% los deja rojos el primer dia, y
+# la reaccion previsible es bajarlo a cero o escribir tests vacios que suben el
+# numero sin verificar nada. Sobre el diff la regla es aplicable de inmediato
+# —lo que escribas, cubrilo—, la deuda vieja no bloquea, y el promedio sube solo.
+#
+# `tests: suggested` corre todo igual pero nunca falla el job. Sirve para
+# inventariar donde no hay tests sin bloquear a nadie.
+#
+# Como se invoca, desde .github/workflows/tests.yml del repo:
+#
+#   name: Tests
+#   on:
+#     pull_request:
+#     push:
+#       branches: [main]
+#     workflow_dispatch:
+#   concurrency:
+#     group: tests-${{ github.ref }}
+#     cancel-in-progress: true
+#   jobs:
+#     tests:
+#       uses: MindyNetworks/.github/.github/workflows/tests.yml@main
+
+name: Tests (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Subdirectorio del proyecto, si no esta en la raiz.
+        type: string
+        required: false
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests y cobertura del diff
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # diff-cover necesita la rama base
+
+      # Parseo plano a proposito: son cuatro claves de un nivel y asi el
+      # workflow no depende de que el runner traiga pyyaml.
+      - name: Leer .mindy.yml
+        id: cfg
+        run: |
+          leer() { grep -E "^$1:" .mindy.yml 2>/dev/null | head -1 | sed "s/^$1:[[:space:]]*//; s/[[:space:]]*#.*//; s/[[:space:]]*$//"; }
+          MODO=$(leer tests);      MODO=${MODO:-suggested}
+          UMBRAL=$(leer coverage_diff); UMBRAL=${UMBRAL:-0}
+          echo "modo=$MODO"     >> "$GITHUB_OUTPUT"
+          echo "umbral=$UMBRAL" >> "$GITHUB_OUTPUT"
+          if [ ! -f .mindy.yml ]; then
+            echo "::warning::Sin .mindy.yml. Se asume tests suggested y umbral 0."
+          fi
+          echo "Modo: $MODO — umbral sobre el diff: $UMBRAL%"
+
+      - name: Detectar stack
+        id: stack
+        run: |
+          if   [ -f package.json ] && grep -q '"test"' package.json; then S=node
+          elif [ -f pyproject.toml ] || [ -f requirements.txt ];      then S=python
+          elif [ -f go.mod ];                                          then S=go
+          elif [ -f composer.json ];                                   then S=php
+          elif ls *.tf >/dev/null 2>&1;                                then S=terraform
+          else S=ninguno
+          fi
+          echo "stack=$S" >> "$GITHUB_OUTPUT"
+          echo "Stack detectado: $S"
+
+      # Un repositorio sin tests no falla, pero tampoco pasa en silencio: el
+      # aviso es lo que produce el inventario de donde falta cubrir.
+      - name: Sin stack de tests
+        if: steps.stack.outputs.stack == 'ninguno'
+        run: |
+          echo "::warning::Sin stack de tests detectado. Nada que correr."
+          echo "Si el proyecto vive en un subdirectorio, pasar working_directory al invocar."
+
+      - name: Node
+        if: steps.stack.outputs.stack == 'node'
+        continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        run: |
+          [ -f package-lock.json ] && npm ci || npm install
+          # test:ci debe emitir cobertura en formato cobertura XML.
+          # El template trae la config de vitest que lo hace.
+          if npm run | grep -qE '^  test:ci'; then npm run test:ci; else npm test; fi
+
+      - name: Python
+        if: steps.stack.outputs.stack == 'python'
+        continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        run: |
+          python -m pip install --quiet --upgrade pip
+          [ -f requirements.txt ] && pip install --quiet -r requirements.txt || true
+          pip install --quiet pytest pytest-cov
+          pytest --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Go
+        if: steps.stack.outputs.stack == 'go'
+        continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        run: go test ./... -coverprofile=coverage.out
+
+      - name: PHP
+        if: steps.stack.outputs.stack == 'php'
+        continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        run: |
+          composer install --no-interaction --quiet
+          if [ -f vendor/bin/phpunit ]; then vendor/bin/phpunit; else echo "::warning::Sin phpunit."; fi
+
+      # Terraform no tiene cobertura: el equivalente es que la configuracion
+      # sea valida y este formateada.
+      - name: Terraform
+        if: steps.stack.outputs.stack == 'terraform'
+        continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false
+          terraform validate
+
+      - name: Cobertura sobre el diff
+        if: steps.cfg.outputs.umbral != '0' && steps.stack.outputs.stack != 'ninguno' && steps.stack.outputs.stack != 'terraform'
+        continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        run: |
+          REPORTE=""
+          for F in coverage/cobertura-coverage.xml coverage.xml coverage/coverage.xml; do
+            [ -f "$F" ] && REPORTE="$F" && break
+          done
+          if [ -z "$REPORTE" ]; then
+            echo "::warning::No se encontro reporte de cobertura en formato cobertura XML."
+            echo "Configurar el runner para emitirlo antes de exigir el umbral."
+            exit 0
+          fi
+          python -m pip install --quiet diff-cover
+          BASE="origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}"
+          git fetch --quiet origin "${BASE#origin/}" || true
+          diff-cover "$REPORTE" --compare-branch="$BASE" \
+            --fail-under=${{ steps.cfg.outputs.umbral }}

@@ -1,0 +1,137 @@
+# Piso de seguridad de todas las organizaciones de Mindy.
+#
+# Este es un workflow REUSABLE: no corre solo, lo invocan los repos. Vive en un
+# repositorio publico, y por eso lo pueden invocar los repos privados de
+# MindyNetworks, Mindy-Haxor-Team y MindyFyH por igual — los workflows de un
+# repositorio publico son invocables desde cualquier organizacion.
+#
+# Arreglar un pin o una regla aca llega a todos los repos. Eso es el punto: la
+# version anterior de este archivo se habia copiado a mano y quedo congelada en
+# 3 de 45 repositorios.
+#
+# Como se invoca, desde .github/workflows/security.yml del repo:
+#
+#   name: Seguridad
+#   on:
+#     pull_request:
+#     push:
+#       branches: [main]
+#     schedule:
+#       - cron: '17 6 * * 1'
+#     workflow_dispatch:
+#   concurrency:
+#     group: seguridad-${{ github.ref }}
+#     cancel-in-progress: true
+#   jobs:
+#     piso:
+#       uses: MindyNetworks/.github/.github/workflows/security.yml@main
+#
+# Las dos herramientas se usan por imagen oficial, no por la Action
+# empaquetada: la Action de gitleaks exige licencia paga en repositorios
+# privados, mientras el binario y la imagen son open source y gratis sin
+# importar la visibilidad del repositorio.
+#
+# Falso positivo:
+#   - gitleaks: agregar una regla de allowlist en .gitleaks.toml
+#   - semgrep:  comentario `// nosemgrep` en la linea, o .semgrepignore
+
+name: Seguridad (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      semgrep_config:
+        description: Reglas de semgrep. Varios packs separados por espacio.
+        type: string
+        required: false
+        default: "p/security-audit p/secrets"
+      gitleaks_full_history:
+        description: Escanear todo el historial. Falso escanea solo el estado actual.
+        type: boolean
+        required: false
+        default: true
+      block_data_files:
+        description: >
+          Rechazar planillas y CSV fuera de un directorio de fixtures. Para los
+          repositorios que manejan datos financieros o de salud, donde un export
+          real no matchea ningun patron de secreto y pasa el escaneo entero.
+        type: boolean
+        required: false
+        default: false
+      fixtures_dir:
+        description: Unico directorio donde se permiten esos archivos.
+        type: string
+        required: false
+        default: "tests/fixtures"
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secretos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: ${{ inputs.gitleaks_full_history && 0 || 1 }}
+
+      # Imagen pineada por digest, no por tag. Un tag es movil: `latest` o
+      # incluso `v8.30.1` pueden reapuntar a otra imagen, y ahi la cadena de
+      # suministro queda abierta. El digest no se puede reapuntar.
+      - name: Escanear con gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source=/repo --verbose --redact --exit-code=1
+
+  semgrep:
+    name: Analisis estatico
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # --metrics off es deliberado: por defecto semgrep manda metadata del
+      # repositorio a semgrep.dev en cada corrida, y estos son repositorios
+      # privados con datos de salud y financieros.
+      #
+      # Los packs `p/...` igual se descargan del registry de semgrep.dev. Para
+      # quedar 100% offline habria que versionar las reglas dentro de este
+      # repositorio y apuntar --config a un path local; queda como paso
+      # siguiente si se decide cortar toda salida a internet.
+      - name: Escanear con semgrep
+        run: |
+          CONFIGS=""
+          for C in ${{ inputs.semgrep_config }}; do CONFIGS="$CONFIGS --config $C"; done
+          docker run --rm -v "$PWD:/src:ro" -w /src \
+            semgrep/semgrep:1.175.0@sha256:b94b53d02fd4a022f9eac4e2af1380f5c3c4c21400e79d3336bdff1d1db5e796 \
+            semgrep scan $CONFIGS --metrics off --error
+
+  archivos-de-datos:
+    name: Planillas fuera de fixtures
+    if: inputs.block_data_files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # gitleaks busca patrones de credenciales. Un export de contabilidad real
+      # no matchea ninguno: es una planilla con nombres, RUTs y montos, y pasa
+      # el escaneo sin una sola alerta. Este job cubre ese hueco.
+      - name: Verificar
+        env:
+          FIXTURES: ${{ inputs.fixtures_dir }}
+        run: |
+          MALOS=$(git ls-files '*.csv' '*.xlsx' '*.xls' '*.ods' '*.sql.gz' '*.dump' \
+                  | grep -v "^${FIXTURES}/" || true)
+          if [ -n "$MALOS" ]; then
+            echo "::error::Hay archivos de datos fuera de ${FIXTURES}/:"
+            echo "$MALOS" | sed 's/^/  /'
+            echo ""
+            echo "Estos archivos suelen ser exports reales. Si son datos de prueba,"
+            echo "moverlos a ${FIXTURES}/. Si son reales, no van en el repositorio."
+            exit 1
+          fi
+          echo "Sin archivos de datos fuera de ${FIXTURES}/."
