@@ -52,9 +52,10 @@ on:
         default: true
       block_data_files:
         description: >
-          Rechazar planillas y CSV fuera de un directorio de fixtures. Para los
-          repositorios que manejan datos financieros o de salud, donde un export
-          real no matchea ningun patron de secreto y pasa el escaneo entero.
+          Forzar el rechazo de planillas y CSV fuera del directorio de fixtures.
+          Normalmente NO hace falta pasarlo: se activa solo cuando .mindy.yml
+          declara `data: financial` o `data: health`. Esto existe para poder
+          activarlo en un repositorio que todavia no tiene .mindy.yml.
         type: boolean
         required: false
         default: false
@@ -68,6 +69,26 @@ permissions:
   contents: read
 
 jobs:
+  # Lee el perfil del repositorio que invoca. Existe para que el control de
+  # archivos de datos se active solo donde corresponde, sin depender de que
+  # alguien recuerde descomentar un input en el invocador: la fuente de verdad
+  # es .mindy.yml, el mismo archivo que lee AGENTS.md.
+  perfil:
+    name: Perfil del repositorio
+    runs-on: ubuntu-latest
+    outputs:
+      datos: ${{ steps.leer.outputs.datos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Leer .mindy.yml
+        id: leer
+        run: |
+          D=$(grep -E '^data:' .mindy.yml 2>/dev/null | head -1 \
+              | sed 's/^data:[[:space:]]*//; s/[[:space:]]*#.*//; s/[[:space:]]*$//')
+          echo "datos=${D:-none}" >> "$GITHUB_OUTPUT"
+          echo "Perfil de datos: ${D:-none}"
+
   gitleaks:
     name: Secretos
     runs-on: ubuntu-latest
@@ -111,7 +132,8 @@ jobs:
 
   archivos-de-datos:
     name: Planillas fuera de fixtures
-    if: inputs.block_data_files
+    needs: perfil
+    if: inputs.block_data_files || needs.perfil.outputs.datos == 'financial' || needs.perfil.outputs.datos == 'health'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
