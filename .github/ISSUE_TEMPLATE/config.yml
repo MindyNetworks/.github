@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Convenciones de contribución
+    url: https://github.com/MindyNetworks/.github/blob/main/CONTRIBUTING.md
+    about: Ramas, commits y pull requests. Revísalo antes de abrir un issue.
+  - name: Reportar una vulnerabilidad de seguridad
+    url: https://github.com/MindyNetworks/.github/blob/main/SECURITY.md
+    about: No uses los issues públicos para vulnerabilidades. Acá está la vía privada.
