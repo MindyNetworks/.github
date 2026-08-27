@@ -6,18 +6,20 @@ propio `CONTRIBUTING.md`, que reemplaza a este.
 
 ## Ramas
 
+La rama default es **siempre `main`**. No usamos `master`.
+
 | Rama | Propósito |
 | -- | -- |
-| rama default (`main` o `master`) | Código de referencia del proyecto. Protegida: no se hace push directo. |
-| `feat/<descripción-corta>` | Nueva funcionalidad. Sale de la rama default. |
-| `fix/<descripción-corta>` | Corrección de bug. Sale de la rama default. |
+| `main` | Código de referencia del proyecto. Protegida: no se hace push directo. |
+| `feat/<descripción-corta>` | Nueva funcionalidad. Sale de `main`. |
+| `fix/<descripción-corta>` | Corrección de bug. Sale de `main`. |
 | `chore/<descripción-corta>` | Configuración, dependencias, herramientas, CI. |
 
-El flujo base es **rama default más ramas de trabajo de vida corta**. No hay
-una rama de integración obligatoria: si un proyecto justifica agregar
-`development`, `staging` o similar, queda a criterio de quien lo mantiene, y en
-ese caso conviene documentarlo en el `README.md` del repositorio para que el
-resto del equipo y los agentes sepan a qué rama apuntar.
+El flujo base es **`main` más ramas de trabajo de vida corta**. No hay una rama
+de integración obligatoria: si un proyecto justifica agregar `development`,
+`staging` o similar, queda a criterio de quien lo mantiene, y en ese caso
+conviene documentarlo en el `README.md` del repositorio para que el resto del
+equipo y los agentes sepan a qué rama apuntar.
 
 Las ramas se borran automáticamente al mergear. No hace falta limpiarlas a
 mano.
@@ -80,6 +82,37 @@ borrado de la rama.
 No se exige aprobación de un revisor, porque hay repositorios con una sola
 persona trabajando. Eso no es permiso para saltarse la revisión: si hay alguien
 más en el proyecto, pídela.
+
+## Registro de cambios
+
+Cada repositorio lleva un `CHANGELOG.md` en la raíz, en formato
+[Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/), con una sección
+`## [No publicado]` arriba.
+
+**Todo PR que cambie comportamiento agrega su entrada ahí**, en la misma rama
+del cambio. Los PRs que solo tocan configuración, dependencias o CI no
+necesitan entrada.
+
+El `git log` ya dice *qué* cambió: con merge por squash y Conventional Commits,
+cada commit de `main` es un PR. Lo que no dice es *por qué*, y eso es
+precisamente lo que se pierde cuando el diff lo redactó un agente. La entrada
+del changelog es para la persona que va a leer esto en seis meses.
+
+Escribe la entrada pensando en quien usa el proyecto, no en quien lo programó:
+
+```markdown
+## [No publicado]
+
+### Agregado
+- Login con OAuth2 para el panel de administración
+
+### Corregido
+- El endpoint de pagos devolvía 500 cuando el monto venía nulo
+```
+
+En los repositorios donde está activado release-please, las entradas se mueven
+a una versión numerada de forma automática al liberar. En los demás, la sección
+`No publicado` es el registro y basta.
 
 ## Revisión de código
 

@@ -19,6 +19,7 @@
 
 - [ ] El CI está verde
 - [ ] El escaneo de seguridad no reporta hallazgos nuevos
+- [ ] Agregué la entrada en `CHANGELOG.md`, o el cambio no altera comportamiento
 - [ ] No agrego secretos, `.env`, llaves ni certificados al repositorio
 - [ ] Agregué o actualicé pruebas según corresponde
 - [ ] Actualicé la documentación si el cambio lo requiere
