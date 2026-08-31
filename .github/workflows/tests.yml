@@ -81,7 +81,10 @@ jobs:
       - name: Detectar stack
         id: stack
         run: |
-          if   [ -f package.json ] && grep -q '"test"' package.json; then S=node
+          # pubspec.yaml va primero: un repositorio Flutter puede tener ademas un
+          # package.json de tooling (lint, husky) y no por eso corre tests de Node.
+          if   [ -f pubspec.yaml ];                                    then S=flutter
+          elif [ -f package.json ] && grep -q '"test"' package.json;   then S=node
           elif [ -f pyproject.toml ] || [ -f requirements.txt ];      then S=python
           elif [ -f go.mod ];                                          then S=go
           elif [ -f composer.json ];                                   then S=php
@@ -98,6 +101,42 @@ jobs:
         run: |
           echo "::warning::Sin stack de tests detectado. Nada que correr."
           echo "Si el proyecto vive en un subdirectorio, pasar working_directory al invocar."
+          # Un check verde que no verifico nada es peor que un check ausente: da
+          # por cumplido un `tests: required` que el CI no esta cumpliendo. No se
+          # falla el job —eso dejaria rojos a todos los repositorios en adopcion—
+          # pero queda escrito en el resumen del run, no solo en el log.
+          if [ "${{ steps.cfg.outputs.modo }}" = "required" ]; then
+            echo "::warning::.mindy.yml declara 'tests: required' y no se ejecuto ningun test."
+            {
+              echo "### Este check paso sin correr tests"
+              echo ""
+              echo ".mindy.yml declara \`tests: required\`, pero no se detecto stack de tests."
+              echo "El check en verde NO significa que el codigo este verificado."
+              echo ""
+              echo "Stacks detectados hoy: Flutter (pubspec.yaml), Node (package.json con"
+              echo "script test), Python, Go, PHP, Terraform. Si este repositorio usa otro,"
+              echo "agregarlo en MindyNetworks/.github."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # El SDK se instala en un step propio porque `uses:` no respeta el
+      # working-directory por defecto del job; el test si lo respeta.
+      - name: Instalar Flutter
+        if: steps.stack.outputs.stack == 'flutter'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter
+        if: steps.stack.outputs.stack == 'flutter'
+        continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        run: |
+          flutter --version
+          flutter pub get
+          # --coverage emite coverage/lcov.info con rutas relativas a la raiz del
+          # paquete, que es lo que diff-cover necesita para cruzarlo con el diff.
+          flutter test --coverage
 
       - name: Node
         if: steps.stack.outputs.stack == 'node'
@@ -143,16 +182,18 @@ jobs:
         if: steps.cfg.outputs.umbral != '0' && steps.stack.outputs.stack != 'ninguno' && steps.stack.outputs.stack != 'terraform'
         continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
         run: |
+          # diff-cover acepta cobertura XML y lcov: cualquier archivo que no
+          # termine en .xml lo trata como lcov.info.
           REPORTE=""
-          for F in coverage/cobertura-coverage.xml coverage.xml coverage/coverage.xml; do
+          for F in coverage/cobertura-coverage.xml coverage.xml coverage/coverage.xml coverage/lcov.info lcov.info; do
             [ -f "$F" ] && REPORTE="$F" && break
           done
           if [ -z "$REPORTE" ]; then
-            echo "::warning::No se encontro reporte de cobertura en formato cobertura XML."
+            echo "::warning::No se encontro reporte de cobertura (cobertura XML ni lcov.info)."
             echo "Configurar el runner para emitirlo antes de exigir el umbral."
             exit 0
           fi
-          python -m pip install --quiet diff-cover
+          python -m pip install --quiet 'diff-cover>=9,<10'
           BASE="origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}"
           git fetch --quiet origin "${BASE#origin/}" || true
           diff-cover "$REPORTE" --compare-branch="$BASE" \

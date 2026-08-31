@@ -130,6 +130,52 @@ jobs:
             semgrep/semgrep:1.175.0@sha256:b94b53d02fd4a022f9eac4e2af1380f5c3c4c21400e79d3336bdff1d1db5e796 \
             semgrep scan $CONFIGS --metrics off --error
 
+  # Un AGENTS.md con los placeholders de la plantilla es peor que no tenerlo: en
+  # los repositorios sin CLAUDE.md es la unica instruccion que lee un agente, y
+  # hoy le diria que el proyecto se llama "[Nombre del proyecto]" y que valide con
+  # Zod en un repositorio que no usa Zod. Avisa, no bloquea.
+  plantilla:
+    name: Plantilla sin completar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verificar AGENTS.md
+        run: |
+          if [ ! -f AGENTS.md ]; then
+            echo "Sin AGENTS.md en este repositorio. Nada que verificar."
+            exit 0
+          fi
+          PENDIENTE=0
+          avisar() { echo "::warning file=AGENTS.md::$1"; PENDIENTE=1; }
+          if grep -q '\[Nombre del proyecto\]' AGENTS.md; then
+            avisar "El titulo sigue siendo [Nombre del proyecto]."
+          fi
+          if grep -q 'Instrucciones para completar este archivo' AGENTS.md; then
+            avisar "Queda la seccion de instrucciones de la plantilla: borrarla al terminar."
+          fi
+          if grep -q 'Que hace, para quien, y que NO hace\|Qué hace, para quién, y qué NO hace' AGENTS.md; then
+            avisar "La seccion 'El proyecto' esta sin llenar."
+          fi
+          if grep -q 'Flujo de ramas de este repo:\*\* \[' AGENTS.md; then
+            avisar "Falta declarar el flujo de ramas real (main / develop -> staging -> main)."
+          fi
+          if grep -q 'Ejemplo de como se ve una regla\|Ejemplo de cómo se ve una regla' AGENTS.md; then
+            avisar "Queda el bloque de ejemplo con Zod: borrarlo y poner las reglas reales."
+          fi
+          if [ "$PENDIENTE" = "1" ]; then
+            {
+              echo "### AGENTS.md sin completar"
+              echo ""
+              echo "Quedan placeholders de la plantilla. Ver los avisos de este job."
+              echo "No se bloquea el merge, pero un agente que lea este archivo va a"
+              echo "afirmar cosas del proyecto que no son ciertas."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "AGENTS.md sin placeholders de la plantilla."
+          fi
+
   archivos-de-datos:
     name: Planillas fuera de fixtures
     needs: perfil
