@@ -142,10 +142,39 @@ jobs:
         if: steps.stack.outputs.stack == 'node'
         continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
         run: |
-          [ -f package-lock.json ] && npm ci || npm install
+          # El gestor se detecta por lockfile, no se asume npm. Correr `npm
+          # install` en un workspace de pnpm no es solo lento: ignora
+          # pnpm-lock.yaml Y el bloque `pnpm.overrides` de package.json. Esos
+          # overrides suelen ser pines de CVE (next, axios, undici, dompurify,
+          # sharp, nanoid, js-yaml, brace-expansion en mindyv2), asi que el job
+          # terminaba resolviendo un arbol distinto y sin parchar, y probando
+          # ese. El piso de seguridad descartando los parches de seguridad.
+          if [ -f pnpm-lock.yaml ]; then
+            GESTOR=pnpm
+            corepack enable
+            # Respeta el campo packageManager del package.json si existe.
+            corepack prepare --activate 2>/dev/null || true
+            pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            GESTOR=yarn
+            corepack enable
+            yarn install --immutable || yarn install --frozen-lockfile
+          elif [ -f package-lock.json ]; then
+            GESTOR=npm
+            npm ci
+          else
+            GESTOR=npm
+            npm install
+          fi
+          echo "Gestor detectado: $GESTOR"
+
           # test:ci debe emitir cobertura en formato cobertura XML.
           # El template trae la config de vitest que lo hace.
-          if npm run | grep -qE '^  test:ci'; then npm run test:ci; else npm test; fi
+          if "$GESTOR" run 2>/dev/null | grep -qE '(^|\s)test:ci'; then
+            "$GESTOR" run test:ci
+          else
+            "$GESTOR" test
+          fi
 
       - name: Python
         if: steps.stack.outputs.stack == 'python'
