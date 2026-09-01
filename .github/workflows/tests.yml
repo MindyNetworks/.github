@@ -156,9 +156,14 @@ jobs:
             corepack prepare --activate 2>/dev/null || true
             pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
-            GESTOR=yarn
-            corepack enable
-            yarn install --immutable || yarn install --frozen-lockfile
+            # yarn no es un gestor soportado en Mindy y no se adopta: no hay un
+            # solo yarn.lock en las tres organizaciones. Se falla con el comando
+            # de migracion en vez de instalar igual, porque soportarlo en el CI
+            # es permitirlo — y tres gestores son tres sintaxis distintas para
+            # los pines de CVE, que es justo lo que este arreglo vino a evitar.
+            echo "::error::yarn no es un gestor soportado. El estandar de Mindy es pnpm."
+            echo "Migrar con: rm yarn.lock && pnpm import && pnpm install"
+            exit 1
           elif [ -f package-lock.json ]; then
             GESTOR=npm
             npm ci
@@ -170,7 +175,10 @@ jobs:
 
           # test:ci debe emitir cobertura en formato cobertura XML.
           # El template trae la config de vitest que lo hace.
-          if "$GESTOR" run 2>/dev/null | grep -qE '(^|\s)test:ci'; then
+          # El patron va anclado a los dos lados: sin el cierre, un repositorio
+          # con test:ci-e2e y sin test:ci matchea igual y despues falla al correr
+          # un script que no existe.
+          if "$GESTOR" run 2>/dev/null | grep -qE '(^|[[:space:]])test:ci([[:space:]]|$)'; then
             "$GESTOR" run test:ci
           else
             "$GESTOR" test
