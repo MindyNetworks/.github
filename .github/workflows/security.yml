@@ -96,7 +96,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: ${{ inputs.gitleaks_full_history && 0 || 1 }}
+          # La condicion va invertida a proposito. En las expresiones de
+          # GitHub `0` es falsy, asi que el patron habitual
+          # `cond && 0 || 1` devuelve SIEMPRE 1: con la condicion en true da
+          # `0`, y `0 || 1` vuelve a caer en el 1. Invertida, el brazo
+          # verdadero vale 1 —truthy— y el 0 queda solo como fallback.
+          #
+          # El bug tenia consecuencias: el input decia escanear todo el
+          # historial y por defecto viene en true, pero el checkout era
+          # siempre de profundidad 1. Ningun repositorio escaneo su historial
+          # desde que existe este workflow, y como el unico commit presente en
+          # un evento pull_request es el merge efimero que fabrica
+          # actions/checkout, los allowlist por commit de .gitleaks.toml no
+          # podian matchear nunca.
+          fetch-depth: ${{ !inputs.gitleaks_full_history && 1 || 0 }}
 
       # Imagen pineada por digest, no por tag. Un tag es movil: `latest` o
       # incluso `v8.30.1` pueden reapuntar a otra imagen, y ahi la cadena de
