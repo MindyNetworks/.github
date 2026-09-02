@@ -201,6 +201,22 @@ con los nombres de las variables y sin ningún valor real.
 
 Para reportar una vulnerabilidad, ver [SECURITY.md](SECURITY.md).
 
+## Proyectos en Vercel
+
+Un proyecto de Vercel nace de un repositorio de la organización y se conecta por
+la integración de GitHub. **Nunca `vercel deploy` desde una carpeta sin
+repositorio**: el código queda solo en la máquina de quien hizo el deploy, y
+nadie más puede arreglarlo después.
+
+Desde el CLI, siempre con `--scope <team>` explícito. Una cuenta puede estar en
+varios teams y sin `--scope` el proyecto cae donde no corresponde. `vercel link`
+antes de `vercel env pull`, para traer las variables del proyecto correcto.
+
+Todo proyecto lleva en la raíz un `vercel.json` con los headers de seguridad
+base: `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`,
+`Referrer-Policy` y `Permissions-Policy`. El de referencia está en
+[`mindy-haxor-template`](https://github.com/Mindy-Haxor-Team/mindy-haxor-template/blob/main/vercel.json).
+
 ## Trabajo con agentes de IA
 
 Los repositorios llevan un `AGENTS.md` en la raíz con el contexto que un agente
