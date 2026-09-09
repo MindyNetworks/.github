@@ -1,0 +1,33 @@
+# Dependabot para el repositorio que contiene los workflows reusables.
+#
+# Existe porque este es el punto ciego del piso: los reusables de
+# .github/workflows/ corren en TODOS los repositorios de las tres
+# organizaciones, y hasta el 2026-09-09 eran los unicos pines que nadie
+# actualizaba — este repositorio no tenia dependabot.yml. El resultado fue
+# actions/checkout tres majors atras, con el CI avisando en cada corrida que
+# apuntaba a un Node ya deprecado.
+#
+# Se desvia del dependabot.yml de la plantilla en la frecuencia, a proposito:
+# la plantilla es mensual porque son ~50 repositorios y el volumen tapa los
+# security updates. Aca es un solo repositorio, agrupado en un PR, y es el pin
+# de mayor alcance de la organizacion. Semanal es barato y llega antes.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Un solo PR con todas las actions juntas, no uno por action.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - reusables
