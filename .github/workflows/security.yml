@@ -74,7 +74,7 @@ jobs:
   # alguien recuerde descomentar un input en el invocador: la fuente de verdad
   # es .mindy.yml, el mismo archivo que lee AGENTS.md.
   perfil:
-    name: Perfil del repositorio
+    name: Repository profile
     runs-on: ubuntu-latest
     outputs:
       datos: ${{ steps.leer.outputs.datos }}
@@ -90,7 +90,7 @@ jobs:
           echo "Perfil de datos: ${D:-none}"
 
   gitleaks:
-    name: Secretos
+    name: Secrets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -121,7 +121,7 @@ jobs:
             detect --source=/repo --verbose --redact --exit-code=1
 
   semgrep:
-    name: Analisis estatico
+    name: Static analysis
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -148,7 +148,7 @@ jobs:
   # hoy le diria que el proyecto se llama "[Nombre del proyecto]" y que valide con
   # Zod en un repositorio que no usa Zod. Avisa, no bloquea.
   plantilla:
-    name: Plantilla sin completar
+    name: Unfilled template
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -190,7 +190,7 @@ jobs:
           fi
 
   archivos-de-datos:
-    name: Planillas fuera de fixtures
+    name: Spreadsheets outside fixtures
     needs: perfil
     if: inputs.block_data_files || needs.perfil.outputs.datos == 'financial' || needs.perfil.outputs.datos == 'health'
     runs-on: ubuntu-latest
