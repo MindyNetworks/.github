@@ -220,6 +220,16 @@ jobs:
           composer install --no-interaction --quiet
           if [ -f vendor/bin/phpunit ]; then vendor/bin/phpunit; else echo "::warning::Sin phpunit."; fi
 
+      # El runner de GitHub ya no trae terraform preinstalado: en la imagen
+      # ubuntu-24.04 el binario no existe y el paso moria con
+      # "terraform: command not found" y exit 127. Se instala explicitamente,
+      # pineado por SHA como el resto.
+      - name: Instalar Terraform
+        if: steps.stack.outputs.stack == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
       # Terraform no tiene cobertura: el equivalente es que la configuracion
       # sea valida y este formateada.
       - name: Terraform
