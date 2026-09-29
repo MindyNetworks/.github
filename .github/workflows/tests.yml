@@ -164,6 +164,11 @@ jobs:
             corepack enable
             # Respeta el campo packageManager del package.json si existe.
             corepack prepare --activate 2>/dev/null || true
+            # pnpm 11 ignores ${VAR} credentials in repository files, so the
+            # GitHub Packages token goes into the user config instead.
+            if [ -n "${NPM_TOKEN:-}" ]; then
+              pnpm config set "//npm.pkg.github.com/:_authToken" "$NPM_TOKEN" --location global
+            fi
             pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
             # yarn no es un gestor soportado en Mindy y no se adopta: no hay un
