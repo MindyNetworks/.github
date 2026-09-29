@@ -46,9 +46,17 @@ on:
         type: string
         required: false
         default: "."
+    secrets:
+      # Token with read:packages for repos that install private packages from
+      # GitHub Packages (e.g. @mindynetworks/design-system) through an .npmrc
+      # that reads ${NPM_TOKEN}. Optional: without it, GITHUB_TOKEN is used,
+      # which works if the package grants this repo Actions access.
+      NPM_TOKEN:
+        required: false
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   tests:
@@ -141,6 +149,8 @@ jobs:
       - name: Node
         if: steps.stack.outputs.stack == 'node'
         continue-on-error: ${{ steps.cfg.outputs.modo != 'required' }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           # El gestor se detecta por lockfile, no se asume npm. Correr `npm
           # install` en un workspace de pnpm no es solo lento: ignora
