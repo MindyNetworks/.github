@@ -47,10 +47,12 @@ on:
         required: false
         default: "."
     secrets:
-      # Token with read:packages for repos that install private packages from
-      # GitHub Packages (e.g. @mindynetworks/design-system) through an .npmrc
-      # that reads ${NPM_TOKEN}. Optional: without it, GITHUB_TOKEN is used,
-      # which works if the package grants this repo Actions access.
+      # Token con read:packages para los repos que instalan paquetes privados
+      # de GitHub Packages (p. ej. @mindynetworks/design-system). El paso Node lo
+      # escribe en el ~/.npmrc de usuario del runner: pnpm >= 11.23 ignora las
+      # credenciales con ${VAR} en el .npmrc versionado del repo. Opcional: sin
+      # este secreto se usa GITHUB_TOKEN, que sirve si el paquete le da a este
+      # repo acceso de Actions (Package settings -> Manage Actions access).
       NPM_TOKEN:
         required: false
 
@@ -159,16 +161,25 @@ jobs:
           # sharp, nanoid, js-yaml, brace-expansion en mindyv2), asi que el job
           # terminaba resolviendo un arbol distinto y sin parchar, y probando
           # ese. El piso de seguridad descartando los parches de seguridad.
+
+          # Credencial de GitHub Packages en el .npmrc de USUARIO, no en el del
+          # repo: pnpm >= 11.23 ignora a proposito las credenciales con variables
+          # de un .npmrc versionado (un registro hostil agregado en un PR podria
+          # quedarse con el token), y consumir paquetes con scope de GitHub
+          # Packages exige ese pnpm. npm y pnpm de cualquier version leen el
+          # ~/.npmrc de usuario. Se escribe con printf a un archivo, sin salida:
+          # el token no pasa por el log (y Actions lo enmascara igual). Solo
+          # aplica a npm.pkg.github.com, asi que no toca a los repos que no usan
+          # GitHub Packages, y el runner es efimero.
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            printf '//npm.pkg.github.com/:_authToken=%s\n' "$NPM_TOKEN" >> "$HOME/.npmrc"
+          fi
+
           if [ -f pnpm-lock.yaml ]; then
             GESTOR=pnpm
             corepack enable
             # Respeta el campo packageManager del package.json si existe.
             corepack prepare --activate 2>/dev/null || true
-            # pnpm 11 ignores ${VAR} credentials in repository files, so the
-            # GitHub Packages token goes into the user config instead.
-            if [ -n "${NPM_TOKEN:-}" ]; then
-              pnpm config set "//npm.pkg.github.com/:_authToken" "$NPM_TOKEN" --location global
-            fi
             pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
             # yarn no es un gestor soportado en Mindy y no se adopta: no hay un
