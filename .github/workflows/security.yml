@@ -64,6 +64,16 @@ on:
         type: string
         required: false
         default: "tests/fixtures"
+      single_job:
+        description: >
+          Correr todas las verificaciones en UN job, `Piso de seguridad`, en vez
+          de tres. GitHub factura cada job redondeado al minuto: tres jobs de
+          ~1,5 min cuestan 5 minutos por corrida, uno de ~3 min cuesta 3. Se
+          pierde el paralelo. Cambia el nombre del check: activarlo solo junto
+          con los checks requeridos del repositorio.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -86,6 +96,7 @@ jobs:
   # sigue siendo un paso propio y el que no aplica aparece como omitido.
   perfil:
     name: Perfil, plantilla y planillas
+    if: ${{ !inputs.single_job }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -161,6 +172,7 @@ jobs:
 
   gitleaks:
     name: Secretos
+    if: ${{ !inputs.single_job }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -210,6 +222,7 @@ jobs:
 
   semgrep:
     name: Analisis estatico
+    if: ${{ !inputs.single_job }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -230,3 +243,133 @@ jobs:
           docker run --rm -v "$PWD:/src:ro" -w /src \
             semgrep/semgrep:1.175.0@sha256:b94b53d02fd4a022f9eac4e2af1380f5c3c4c21400e79d3336bdff1d1db5e796 \
             semgrep scan $CONFIGS --metrics off --error
+
+  # Las mismas verificaciones que `perfil`, `gitleaks` y `semgrep`, en UN job,
+  # solo con `single_job: true`. Los pasos de los tres jobs se copian tal cual:
+  # un cambio en uno de ellos va tambien aca.
+  #
+  # Cada verificacion que puede fallar sigue de largo (`continue-on-error`) y
+  # `Resultado` falla al final nombrando cuales fallaron, asi que un error de
+  # secretos no esconde uno de semgrep. Es lo que se perdia al fusionar.
+  piso:
+    name: Piso de seguridad
+    if: ${{ inputs.single_job }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Misma expresion invertida que el job `Secretos`.
+          fetch-depth: ${{ !inputs.gitleaks_full_history && 1 || 0 }}
+
+      - name: Leer .mindy.yml
+        id: leer
+        run: |
+          D=$(grep -E '^data:' .mindy.yml 2>/dev/null | head -1 \
+              | sed 's/^data:[[:space:]]*//; s/[[:space:]]*#.*//; s/[[:space:]]*$//')
+          echo "datos=${D:-none}" >> "$GITHUB_OUTPUT"
+          echo "Perfil de datos: ${D:-none}"
+
+      - name: Verificar AGENTS.md
+        run: |
+          if [ ! -f AGENTS.md ]; then
+            echo "Sin AGENTS.md en este repositorio. Nada que verificar."
+            exit 0
+          fi
+          PENDIENTE=0
+          avisar() { echo "::warning file=AGENTS.md::$1"; PENDIENTE=1; }
+          if grep -q '\[Nombre del proyecto\]' AGENTS.md; then
+            avisar "El titulo sigue siendo [Nombre del proyecto]."
+          fi
+          if grep -q 'Instrucciones para completar este archivo' AGENTS.md; then
+            avisar "Queda la seccion de instrucciones de la plantilla: borrarla al terminar."
+          fi
+          if grep -q 'Que hace, para quien, y que NO hace\|Qué hace, para quién, y qué NO hace' AGENTS.md; then
+            avisar "La seccion 'El proyecto' esta sin llenar."
+          fi
+          if grep -q 'Flujo de ramas de este repo:\*\* \[' AGENTS.md; then
+            avisar "Falta declarar el flujo de ramas real (main / develop -> staging -> main)."
+          fi
+          if grep -q 'Ejemplo de como se ve una regla\|Ejemplo de cómo se ve una regla' AGENTS.md; then
+            avisar "Queda el bloque de ejemplo con Zod: borrarlo y poner las reglas reales."
+          fi
+          if [ "$PENDIENTE" = "1" ]; then
+            {
+              echo "### AGENTS.md sin completar"
+              echo ""
+              echo "Quedan placeholders de la plantilla. Ver los avisos de este job."
+              echo "No se bloquea el merge, pero un agente que lea este archivo va a"
+              echo "afirmar cosas del proyecto que no son ciertas."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "AGENTS.md sin placeholders de la plantilla."
+          fi
+
+      - name: Planillas fuera de fixtures
+        id: planillas
+        if: inputs.block_data_files || steps.leer.outputs.datos == 'financial' || steps.leer.outputs.datos == 'health'
+        continue-on-error: true
+        env:
+          FIXTURES: ${{ inputs.fixtures_dir }}
+        run: |
+          MALOS=$(git ls-files '*.csv' '*.xlsx' '*.xls' '*.ods' '*.sql.gz' '*.dump' \
+                  | grep -v "^${FIXTURES}/" || true)
+          if [ -n "$MALOS" ]; then
+            echo "::error::Hay archivos de datos fuera de ${FIXTURES}/:"
+            echo "$MALOS" | sed 's/^/  /'
+            echo ""
+            echo "Estos archivos suelen ser exports reales. Si son datos de prueba,"
+            echo "moverlos a ${FIXTURES}/. Si son reales, no van en el repositorio."
+            exit 1
+          fi
+          echo "Sin archivos de datos fuera de ${FIXTURES}/."
+
+      - name: Escanear con gitleaks
+        id: secretos
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FULL_HISTORY: ${{ inputs.gitleaks_full_history }}
+        run: |
+          # Misma logica que el job `Secretos`, con el rango solo cuando hay
+          # historial (con profundidad 1 BASE_SHA no esta en el clon).
+          if [ -n "${BASE_SHA:-}" ] && [ "$FULL_HISTORY" = "true" ]; then
+            RANGO="--log-opts=$BASE_SHA..HEAD"
+            echo "Modo pull request: se escanea $BASE_SHA..HEAD"
+          elif [ "$FULL_HISTORY" = "true" ]; then
+            RANGO=""
+            echo "Modo completo: todo el historial"
+          else
+            RANGO=""
+            echo "Modo arbol: checkout de profundidad 1, se escanea el estado actual"
+          fi
+          docker run --rm -v "$PWD:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source=/repo --verbose --redact --exit-code=1 $RANGO
+
+      - name: Escanear con semgrep
+        id: estatico
+        continue-on-error: true
+        run: |
+          CONFIGS=""
+          for C in ${{ inputs.semgrep_config }}; do CONFIGS="$CONFIGS --config $C"; done
+          docker run --rm -v "$PWD:/src:ro" -w /src \
+            semgrep/semgrep:1.175.0@sha256:b94b53d02fd4a022f9eac4e2af1380f5c3c4c21400e79d3336bdff1d1db5e796 \
+            semgrep scan $CONFIGS --metrics off --error
+
+      - name: Resultado
+        if: always()
+        env:
+          PLANILLAS: ${{ steps.planillas.outcome }}
+          SECRETOS: ${{ steps.secretos.outcome }}
+          ESTATICO: ${{ steps.estatico.outcome }}
+        run: |
+          FALLO=0
+          fallo() { echo "::error::$1"; FALLO=1; }
+          [ "$PLANILLAS" = "failure" ] && fallo "Planillas fuera de fixtures: hay archivos de datos fuera del directorio de fixtures."
+          [ "$SECRETOS" = "failure" ] && fallo "Secretos: gitleaks encontro un posible secreto."
+          [ "$ESTATICO" = "failure" ] && fallo "Analisis estatico: semgrep encontro hallazgos."
+          if [ "$FALLO" = "0" ]; then
+            echo "Planillas: $PLANILLAS · Secretos: $SECRETOS · Analisis estatico: $ESTATICO"
+          fi
+          exit "$FALLO"
