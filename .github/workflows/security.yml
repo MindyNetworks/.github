@@ -188,6 +188,7 @@ jobs:
         env:
           # Vacio fuera de un pull_request.
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FULL_HISTORY: ${{ inputs.gitleaks_full_history }}
         run: |
           # En un pull request se escanean SOLO los commits del PR. En push,
           # cron y dispatch se escanea el historial completo.
@@ -197,12 +198,19 @@ jobs:
           # carisimo: en mindyv2 son 1h43m sobre 878 MB, por pull request. La
           # barrida historica es trabajo del cron semanal; el PR solo tiene que
           # atrapar lo que ese PR introduce.
-          if [ -n "${BASE_SHA:-}" ]; then
+          #
+          # El rango solo existe con historial: con gitleaks_full_history en
+          # false el checkout es de profundidad 1, BASE_SHA no esta en el clon
+          # y `git log BASE..HEAD` falla. Ahi se escanea el arbol actual.
+          if [ -n "${BASE_SHA:-}" ] && [ "$FULL_HISTORY" = "true" ]; then
             RANGO="--log-opts=$BASE_SHA..HEAD"
             echo "Modo pull request: se escanea $BASE_SHA..HEAD"
-          else
+          elif [ "$FULL_HISTORY" = "true" ]; then
             RANGO=""
             echo "Modo completo: todo el historial"
+          else
+            RANGO=""
+            echo "Modo arbol: checkout de profundidad 1, se escanea el estado actual"
           fi
           docker run --rm -v "$PWD:/repo:ro" \
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
