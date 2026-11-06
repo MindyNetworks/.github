@@ -46,7 +46,10 @@ on:
         required: false
         default: "p/security-audit p/secrets"
       gitleaks_full_history:
-        description: Escanear todo el historial. Falso escanea solo el estado actual.
+        description: >
+          Escanear todo el historial en push, cron y dispatch. Falso escanea solo
+          el estado actual. En un pull request no aplica: se escanean siempre
+          los commits del PR.
         type: boolean
         required: false
         default: true
@@ -191,42 +194,69 @@ jobs:
           # un evento pull_request es el merge efimero que fabrica
           # actions/checkout, los allowlist por commit de .gitleaks.toml no
           # podian matchear nunca.
-          fetch-depth: ${{ !inputs.gitleaks_full_history && 1 || 0 }}
+          #
+          # En un pull request el checkout es siempre de profundidad 1: el
+          # paso de gitleaks trae despues solo los commits del PR. Clonar el
+          # historial completo para escanear un rango de pocos commits era la
+          # mayor parte del tiempo del job.
+          fetch-depth: ${{ (github.event_name == 'pull_request' || !inputs.gitleaks_full_history) && 1 || 0 }}
 
       # Imagen pineada por digest, no por tag. Un tag es movil: `latest` o
       # incluso `v8.30.1` pueden reapuntar a otra imagen, y ahi la cadena de
       # suministro queda abierta. El digest no se puede reapuntar.
       - name: Escanear con gitleaks
         env:
-          # Vacio fuera de un pull_request.
+          EVENTO: ${{ github.event_name }}
+          # Vacios fuera de un pull_request.
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          COMMITS: ${{ github.event.pull_request.commits }}
           FULL_HISTORY: ${{ inputs.gitleaks_full_history }}
         run: |
-          # En un pull request se escanean SOLO los commits del PR. En push,
-          # cron y dispatch se escanea el historial completo.
+          # En un pull request se escanean SOLO los commits del PR, sin
+          # importar gitleaks_full_history. En push, cron y dispatch manda el
+          # input: historial completo o arbol actual.
           #
           # El historial no cambia entre un PR y el siguiente, asi que
           # re-escanearlo en cada corrida no encuentra nada nuevo y cuesta
           # carisimo: en mindyv2 son 1h43m sobre 878 MB, por pull request. La
           # barrida historica es trabajo del cron semanal; el PR solo tiene que
-          # atrapar lo que ese PR introduce.
-          #
-          # El rango solo existe con historial: con gitleaks_full_history en
-          # false el checkout es de profundidad 1, BASE_SHA no esta en el clon
-          # y `git log BASE..HEAD` falla. Ahi se escanea el arbol actual.
-          if [ -n "${BASE_SHA:-}" ] && [ "$FULL_HISTORY" = "true" ]; then
-            RANGO="--log-opts=$BASE_SHA..HEAD"
-            echo "Modo pull request: se escanea $BASE_SHA..HEAD"
+          # atrapar lo que ese PR introduce. Escanear los commits, y no el diff
+          # final, atrapa tambien un secreto agregado en un commit y borrado en
+          # el siguiente: sigue en el historial aunque el diff no lo muestre.
+          RANGO=()
+          if [ "$EVENTO" = "pull_request" ] && [ -n "${BASE_SHA:-}" ]; then
+            # HEAD es el merge commit que arma GitHub. El commit mas viejo del
+            # PR esta a lo sumo a COMMITS saltos de el y sus padres a COMMITS+1:
+            # con profundidad COMMITS+2 todo commit del PR tiene a sus padres
+            # en el clon. Uno sin padres seria un borde del clon superficial:
+            # git lo muestra como si agregara su arbol completo, y gitleaks
+            # volveria a escanear el repositorio entero.
+            if [[ "${COMMITS:-}" =~ ^[0-9]+$ ]] \
+              && git fetch --no-tags --quiet --depth="$((COMMITS + 2))" origin "$(git rev-parse HEAD)" \
+              && { git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+                   || git fetch --no-tags --quiet --depth=1 origin "$BASE_SHA"; }; then
+              # Los bordes que caen dentro de BASE..HEAD son commits de la
+              # rama base que no alcanzan a unirse con BASE_SHA en el clon.
+              # Ninguno es del PR, porque los del PR tienen a sus padres: se
+              # excluyen para no escanear su arbol completo.
+              BORDES=""
+              SHALLOW=$(git rev-parse --git-path shallow)
+              if [ -f "$SHALLOW" ]; then
+                BORDES=$(git rev-list "$BASE_SHA..HEAD" | grep -Fx -f "$SHALLOW" | sed 's/^/^/' | paste -sd ' ' - || true)
+              fi
+              RANGO=("--log-opts=$BASE_SHA..HEAD${BORDES:+ $BORDES}")
+              echo "Modo pull request: se escanean los commits de $BASE_SHA..HEAD"
+            else
+              echo "::warning::No se pudo traer el historial del PR: se escanea lo que hay en el clon (arbol actual)."
+            fi
           elif [ "$FULL_HISTORY" = "true" ]; then
-            RANGO=""
             echo "Modo completo: todo el historial"
           else
-            RANGO=""
             echo "Modo arbol: checkout de profundidad 1, se escanea el estado actual"
           fi
           docker run --rm -v "$PWD:/repo:ro" \
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            detect --source=/repo --verbose --redact --exit-code=1 $RANGO
+            detect --source=/repo --verbose --redact --exit-code=1 "${RANGO[@]}"
 
   semgrep:
     name: Analisis estatico
@@ -245,12 +275,46 @@ jobs:
       # repositorio y apuntar --config a un path local; queda como paso
       # siguiente si se decide cortar toda salida a internet.
       - name: Escanear con semgrep
+        env:
+          EVENTO: ${{ github.event_name }}
+          # Vacio fuera de un pull_request.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           CONFIGS=""
           for C in ${{ inputs.semgrep_config }}; do CONFIGS="$CONFIGS --config $C"; done
-          docker run --rm -v "$PWD:/src:ro" -w /src \
+          # En un pull request semgrep analiza solo los archivos que cambiaron
+          # respecto de la rama base y reporta solo los hallazgos nuevos
+          # (--baseline-commit). En push, cron y dispatch analiza el
+          # repositorio entero, como siempre.
+          #
+          # semgrep calcula `git merge-base BASE_SHA HEAD`. HEAD es el merge
+          # commit del PR y en un checkout de profundidad 1 no tiene padres en
+          # el clon, asi que traer solo BASE_SHA no alcanza: se trae HEAD con
+          # profundidad 2, que une a HEAD con su padre de la rama base. Si aun
+          # asi no hay merge base, se analiza el repositorio entero.
+          #
+          # Con linea base el montaje es de escritura: semgrep hace
+          # `git reset --hard` a la base (o un `git worktree`) para analizarla
+          # y vuelve a HEAD al terminar. Con el montaje de solo lectura falla.
+          BASELINE=()
+          MONTAJE=ro
+          if [ "$EVENTO" = "pull_request" ] && [ -n "${BASE_SHA:-}" ]; then
+            if ! git merge-base "$BASE_SHA" HEAD >/dev/null 2>&1; then
+              git fetch --no-tags --quiet --depth=2 origin "$(git rev-parse HEAD)" || true
+              git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+                || git fetch --no-tags --quiet --depth=1 origin "$BASE_SHA" || true
+            fi
+            if git merge-base "$BASE_SHA" HEAD >/dev/null 2>&1; then
+              BASELINE=(--baseline-commit "$BASE_SHA")
+              MONTAJE=rw
+              echo "Modo pull request: hallazgos nuevos respecto de $BASE_SHA"
+            else
+              echo "::warning::Sin merge base con $BASE_SHA: se analiza el repositorio entero."
+            fi
+          fi
+          docker run --rm -v "$PWD:/src:$MONTAJE" -w /src \
             semgrep/semgrep:1.175.0@sha256:b94b53d02fd4a022f9eac4e2af1380f5c3c4c21400e79d3336bdff1d1db5e796 \
-            semgrep scan $CONFIGS --metrics off --error
+            semgrep scan $CONFIGS --metrics off --error "${BASELINE[@]}"
 
   # Las mismas verificaciones que `perfil`, `gitleaks` y `semgrep`, en UN job,
   # solo con `single_job: true`. Los pasos de los tres jobs se copian tal cual:
@@ -267,8 +331,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Misma expresion invertida que el job `Secretos`.
-          fetch-depth: ${{ !inputs.gitleaks_full_history && 1 || 0 }}
+          # Misma expresion invertida que el job `Secretos`, con profundidad 1
+          # en un pull request.
+          fetch-depth: ${{ (github.event_name == 'pull_request' || !inputs.gitleaks_full_history) && 1 || 0 }}
 
       - name: Leer .mindy.yml
         id: leer
@@ -336,34 +401,71 @@ jobs:
         id: secretos
         continue-on-error: true
         env:
+          EVENTO: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          COMMITS: ${{ github.event.pull_request.commits }}
           FULL_HISTORY: ${{ inputs.gitleaks_full_history }}
         run: |
-          # Misma logica que el job `Secretos`, con el rango solo cuando hay
-          # historial (con profundidad 1 BASE_SHA no esta en el clon).
-          if [ -n "${BASE_SHA:-}" ] && [ "$FULL_HISTORY" = "true" ]; then
-            RANGO="--log-opts=$BASE_SHA..HEAD"
-            echo "Modo pull request: se escanea $BASE_SHA..HEAD"
+          # Misma logica que el job `Secretos`: en un pull request, solo los
+          # commits del PR, con la profundidad justa para que cada uno tenga a
+          # sus padres en el clon y sin los bordes de la rama base.
+          RANGO=()
+          if [ "$EVENTO" = "pull_request" ] && [ -n "${BASE_SHA:-}" ]; then
+            if [[ "${COMMITS:-}" =~ ^[0-9]+$ ]] \
+              && git fetch --no-tags --quiet --depth="$((COMMITS + 2))" origin "$(git rev-parse HEAD)" \
+              && { git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+                   || git fetch --no-tags --quiet --depth=1 origin "$BASE_SHA"; }; then
+              BORDES=""
+              SHALLOW=$(git rev-parse --git-path shallow)
+              if [ -f "$SHALLOW" ]; then
+                BORDES=$(git rev-list "$BASE_SHA..HEAD" | grep -Fx -f "$SHALLOW" | sed 's/^/^/' | paste -sd ' ' - || true)
+              fi
+              RANGO=("--log-opts=$BASE_SHA..HEAD${BORDES:+ $BORDES}")
+              echo "Modo pull request: se escanean los commits de $BASE_SHA..HEAD"
+            else
+              echo "::warning::No se pudo traer el historial del PR: se escanea lo que hay en el clon (arbol actual)."
+            fi
           elif [ "$FULL_HISTORY" = "true" ]; then
-            RANGO=""
             echo "Modo completo: todo el historial"
           else
-            RANGO=""
             echo "Modo arbol: checkout de profundidad 1, se escanea el estado actual"
           fi
           docker run --rm -v "$PWD:/repo:ro" \
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            detect --source=/repo --verbose --redact --exit-code=1 $RANGO
+            detect --source=/repo --verbose --redact --exit-code=1 "${RANGO[@]}"
 
       - name: Escanear con semgrep
         id: estatico
         continue-on-error: true
+        env:
+          EVENTO: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           CONFIGS=""
           for C in ${{ inputs.semgrep_config }}; do CONFIGS="$CONFIGS --config $C"; done
-          docker run --rm -v "$PWD:/src:ro" -w /src \
+          # Misma logica que el job `Analisis estatico`: en un pull request,
+          # solo hallazgos nuevos respecto de la base, con montaje de escritura.
+          # Despues del paso de gitleaks la merge base suele estar en el clon y
+          # no hace falta traer nada.
+          BASELINE=()
+          MONTAJE=ro
+          if [ "$EVENTO" = "pull_request" ] && [ -n "${BASE_SHA:-}" ]; then
+            if ! git merge-base "$BASE_SHA" HEAD >/dev/null 2>&1; then
+              git fetch --no-tags --quiet --depth=2 origin "$(git rev-parse HEAD)" || true
+              git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+                || git fetch --no-tags --quiet --depth=1 origin "$BASE_SHA" || true
+            fi
+            if git merge-base "$BASE_SHA" HEAD >/dev/null 2>&1; then
+              BASELINE=(--baseline-commit "$BASE_SHA")
+              MONTAJE=rw
+              echo "Modo pull request: hallazgos nuevos respecto de $BASE_SHA"
+            else
+              echo "::warning::Sin merge base con $BASE_SHA: se analiza el repositorio entero."
+            fi
+          fi
+          docker run --rm -v "$PWD:/src:$MONTAJE" -w /src \
             semgrep/semgrep:1.175.0@sha256:b94b53d02fd4a022f9eac4e2af1380f5c3c4c21400e79d3336bdff1d1db5e796 \
-            semgrep scan $CONFIGS --metrics off --error
+            semgrep scan $CONFIGS --metrics off --error "${BASELINE[@]}"
 
       - name: Resultado
         if: always()
